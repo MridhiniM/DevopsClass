@@ -1,0 +1,105 @@
+pipeline {
+    agent any
+
+    environment {
+        APP_DIR = 'Exercises/9-Jenkins-Multi-Stage-Pipeline'
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                dir("${APP_DIR}") {
+                    echo 'Installing Python dependencies...'
+                    sh 'python3 --version'
+                    sh 'python3 -m venv .venv'
+                    sh '.venv/bin/pip install -r requirements.txt'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir("${APP_DIR}") {
+                    echo 'Running unit tests...'
+                    sh '.venv/bin/python -m unittest discover -s .'
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                dir("${APP_DIR}") {
+                    echo 'Deploying application to mock deployment directory...'
+                    sh 'mkdir -p python-app-deploy'
+                    sh 'cp app.py python-app-deploy/'
+                    sh 'cp requirements.txt python-app-deploy/'
+                }
+            }
+        }
+
+        stage('Run Application') {
+            steps {
+                dir("${APP_DIR}") {
+                    echo 'Starting deployed Flask application...'
+                    sh '''
+                        if [ -f python-app-deploy/app.pid ]; then
+                            kill "$(cat python-app-deploy/app.pid)" 2>/dev/null || true
+                        fi
+
+                        nohup .venv/bin/python python-app-deploy/app.py \
+                            > python-app-deploy/app.log 2>&1 &
+                        echo $! > python-app-deploy/app.pid
+
+                        for i in $(seq 1 15); do
+                            if .venv/bin/python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:5000/', timeout=2).read().decode())" 2>/dev/null; then
+                                exit 0
+                            fi
+                            sleep 1
+                        done
+
+                        cat python-app-deploy/app.log
+                        exit 1
+                    '''
+                }
+            }
+        }
+
+        stage('Test Application') {
+            steps {
+                dir("${APP_DIR}") {
+                    echo 'Verifying the running deployed application...'
+                    sh '''
+                        .venv/bin/python -c "
+import urllib.request
+response = urllib.request.urlopen('http://127.0.0.1:5000/', timeout=5)
+body = response.read().decode()
+print('HTTP Status:', response.status)
+print('Response:', body)
+assert response.status == 200
+assert body == 'Hello, Jenkins Multi-Stage Pipeline!'
+"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            dir("${APP_DIR}") {
+                sh '''
+                    if [ -f python-app-deploy/app.pid ]; then
+                        kill "$(cat python-app-deploy/app.pid)" 2>/dev/null || true
+                        rm -f python-app-deploy/app.pid
+                    fi
+                '''
+            }
+        }
+        success {
+            echo 'SUCCESS: All pipeline stages completed!'
+        }
+        failure {
+            echo 'FAILURE: Check the console output for details.'
+        }
+    }
+}
